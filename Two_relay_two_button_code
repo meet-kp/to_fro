@@ -1,0 +1,332 @@
+#if !defined(ESP8266)
+#error This code is intended to run only on the ESP8266 boards! Please check your Tools->Board setting.
+#endif
+
+#define WEBSOCKETS_LOGLEVEL 2
+
+#include <ESP8266WiFi.h>
+#include <ESP8266WiFiMulti.h>
+#include <ArduinoJson.h>
+#include <WebSocketsClient_Generic.h>
+#include <SocketIOclient_Generic.h>
+#include <Hash.h>
+
+// LOCK_1
+#define LOCK1_ID "1cde0ac5-1b4d-4342-9cd7-c152cb2fb0f8" //i am getting this from springboot
+#define LOCK1_LED_PIN D3
+#define LOCK1_RELAY_PIN D6
+#define LOCK1_BUTTON_PIN D5
+
+//LOCK_2 
+#define LOCK2_ID "1cde0ac5-1b4d-4342-9cd7-c152cb2fb0f8mkp" //dummy name 
+#define LOCK2_LED_PIN D4
+#define LOCK2_RELAY_PIN D7
+#define LOCK2_BUTTON_PIN D8
+
+#define LOCK_DURATION 10000 // 10 seconds in milliseconds
+
+// Global boolean variables
+bool lock1State = false;
+bool lock2State = false;
+bool lock1ButtonState = LOW;
+bool lock2ButtonState = LOW;
+bool lastLock1ButtonState = LOW;
+bool lastLock2ButtonState = LOW;
+int lock1ButtonPressCount = 0;
+int lock2ButtonPressCount = 0;
+unsigned long lock1ButtonPressTime = 0;
+unsigned long lock2ButtonPressTime = 0;
+
+ESP8266WiFiMulti WiFiMulti;
+SocketIOclient socketIO;
+
+// Select the IP address according to your local network
+IPAddress serverIP(49, 249, 200, 132);
+uint16_t serverPort = 3000; //8080;    //3000;
+
+void socketIOEvent(const socketIOmessageType_t& type, uint8_t* payload, const size_t& length);
+void sendInstructionToStation(uint8_t* payload);
+
+void setup()
+{
+  Serial.begin(115200);
+  pinMode(LOCK1_LED_PIN, OUTPUT);
+  pinMode(LOCK1_RELAY_PIN, OUTPUT);
+  pinMode(LOCK1_BUTTON_PIN, INPUT_PULLUP);
+
+  pinMode(LOCK2_LED_PIN, OUTPUT);
+  pinMode(LOCK2_RELAY_PIN, OUTPUT);
+  pinMode(LOCK2_BUTTON_PIN, INPUT_PULLUP);
+
+  digitalWrite(LOCK1_LED_PIN, LOW);
+  digitalWrite(LOCK1_RELAY_PIN, LOW);
+  digitalWrite(LOCK2_LED_PIN, LOW);
+  digitalWrite(LOCK2_RELAY_PIN, LOW);
+
+  Serial.print("Free Heap Memory: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
+  while (!Serial)
+  {
+    delay(100);
+  }
+
+  Serial.print("\nStart ESP8266_WebSocketClientSocketIO on ");
+  Serial.println(ARDUINO_BOARD);
+  Serial.println(WEBSOCKETS_GENERIC_VERSION);
+
+  // Disable AP
+  if (WiFi.getMode() & WIFI_AP)
+  {
+    WiFi.softAPdisconnect(true);
+  }
+
+  WiFiMulti.addAP("mkp", "11111111");
+  WiFiMulti.addAP("LEKEAMP", "87654321");
+
+  while (WiFiMulti.run() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(100);
+  }
+
+  Serial.println();
+
+  // Client address
+  Serial.print("WebSockets Client started @ IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Server address, port, and URL
+  Serial.print("Connecting to WebSockets Server @ IP address: ");
+  Serial.print(serverIP);
+  Serial.print(", port: ");
+  Serial.println(serverPort);
+
+  // Set the reconnect interval to 10s, new from v2.5.1 to avoid flooding the server. Default is 0.5s
+  socketIO.setReconnectInterval(10000);
+
+  socketIO.setExtraHeaders("Authorization: 1234567890");
+  // 1= User Name, 2= userId, 3=usertype
+  socketIO.setExtraHeaders("data:test,6707ab2b-70c7-480e-83ee-d472143a8b57,station");
+
+  socketIO.begin(serverIP, serverPort);
+
+  // Event handler
+  socketIO.onEvent(socketIOEvent);
+}
+
+void loop()
+{
+  socketIO.loop();
+
+  // Check lock1 button state
+  lock1ButtonState = digitalRead(LOCK1_BUTTON_PIN);
+
+  if (lock1ButtonState != lastLock1ButtonState)
+  {
+    if (lock1ButtonState == LOW)
+    {
+      lock1ButtonPressTime = millis();
+      lock1ButtonPressCount++;
+
+      lock1State = !lock1State;
+      digitalWrite(LOCK1_LED_PIN, lock1State);
+      digitalWrite(LOCK1_RELAY_PIN, lock1State);
+
+      Serial.print("Lock 1 Button Pressed! Count: ");
+      Serial.println(lock1ButtonPressCount);
+
+      // Send update to server
+      DynamicJsonDocument doc(1024);
+      JsonArray array = doc.to<JsonArray>();
+      array.add("sendData");
+      JsonObject param1 = array.createNestedObject();
+      param1["stationId"] = "1234";
+      param1["status"] = lock1State ? "lock" : "unlock";
+      String output;
+      serializeJson(doc, output);
+      socketIO.sendEVENT(output);
+
+      // delay(2000);
+    }
+
+    lastLock1ButtonState = lock1ButtonState;
+  }
+
+  // Check lock2 button state
+  lock2ButtonState = digitalRead(LOCK2_BUTTON_PIN);
+
+  if (lock2ButtonState != lastLock2ButtonState)
+  {
+    if (lock2ButtonState == LOW)
+    {
+      lock2ButtonPressTime = millis();
+      lock2ButtonPressCount++;
+
+      lock2State = !lock2State;
+      digitalWrite(LOCK2_LED_PIN, lock2State);
+      digitalWrite(LOCK2_RELAY_PIN, lock2State);
+
+      Serial.print("Lock 2 Button Pressed! Count: ");
+      Serial.println(lock2ButtonPressCount);
+
+      // Send update to server
+      DynamicJsonDocument doc(1024);
+      JsonArray array = doc.to<JsonArray>();
+      array.add("sendData"); //event name
+      JsonObject param1 = array.createNestedObject();
+      param1["stationId"] = "5678";
+      param1["status"] = lock2State ? "lock" : "unlock";
+      String output;
+      serializeJson(doc, output);
+      socketIO.sendEVENT(output);
+
+      // delay(2000);
+    }
+
+    lastLock2ButtonState = lock2ButtonState;
+  }
+
+  // Check whether the lock1 duration has expired
+  if (lock1State && (millis() - lock1ButtonPressTime >= LOCK_DURATION))
+  {
+    if (lock1State != lastLock1ButtonState)
+    {
+      Serial.print("Lock 1 State: ");
+      Serial.println(lock1State);
+
+      lastLock1ButtonState = lock1State;
+    }
+  }
+
+  // Check whether the lock2 duration has expired
+  if (lock2State && (millis() - lock2ButtonPressTime >= LOCK_DURATION))
+  {
+    if (lock2State != lastLock2ButtonState)
+    {
+      Serial.print("Lock 2 State: ");
+      Serial.println(lock2State);
+
+      lastLock2ButtonState = lock2State;
+    }
+  }
+}
+
+void socketIOEvent(const socketIOmessageType_t& type, uint8_t* payload, const size_t& length)
+{
+  switch (type)
+  {
+    case sIOtype_CONNECT:
+      Serial.print("[IOc] Connected to url: ");
+      Serial.println((char*)payload);
+
+    
+      socketIO.send(sIOtype_CONNECT, "/");
+
+      break;
+
+    case sIOtype_EVENT:
+      Serial.print("[IOc] Get event: ");
+      Serial.println((char*)payload);
+
+      // Handle incoming event
+      sendInstructionToStation(payload);
+
+      break;
+
+    case sIOtype_ACK:
+      Serial.print("[IOc] Get ack: ");
+      Serial.println(length);
+
+      hexdump(payload, length);
+      break;
+
+    case sIOtype_ERROR:
+      Serial.print("[IOc] Get error: ");
+      Serial.println(length);
+
+      hexdump(payload, length);
+      break;
+
+    case sIOtype_BINARY_EVENT:
+      Serial.print("[IOc] Get binary: ");
+      Serial.println(length);
+
+      hexdump(payload, length);
+      break;
+
+    case sIOtype_BINARY_ACK:
+      Serial.print("[IOc] Get binary ack: ");
+      Serial.println(length);
+
+      hexdump(payload, length);
+      break;
+
+    case sIOtype_PING:
+      Serial.println("[IOc] Get PING");
+      break;
+
+    case sIOtype_PONG:
+      Serial.println("[IOc] Get PONG");
+      break;
+
+    default:
+      break;
+  }
+}
+//receving lock unlock messages from node server 
+void sendInstructionToStation(uint8_t* payload)
+{
+  // Parse the received JSON payload
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, payload);
+  doc["lock1Status"] = lock1State;
+  doc["lock2Status"] = lock2State;
+  if (error)
+  {
+    Serial.println(error.c_str());
+    return;
+  }
+
+  String eventName = doc[0];
+  String eventPayload = doc[1];
+  Serial.println("Received event: " + eventName);
+  Serial.println("Event payload: " + eventPayload);
+  
+  
+  if (eventPayload == "lock1" && doc["lockId"] == LOCK1_ID)
+  {
+    lock1State = true;
+    digitalWrite(LOCK1_LED_PIN, HIGH);
+    digitalWrite(LOCK1_RELAY_PIN, HIGH);
+    Serial.print("Lock 1 ID: lock");
+    Serial.println(LOCK1_ID);
+  }
+  else if (eventPayload == "unlock1" && doc["lockId"] == LOCK1_ID)
+  {
+    lock1State = false;
+    digitalWrite(LOCK1_LED_PIN, LOW);
+    digitalWrite(LOCK1_RELAY_PIN, LOW);
+    Serial.print("Lock 1 ID: unlocked");
+    Serial.println(LOCK1_ID);
+  }
+
+  // Lock 2 control
+  if (eventPayload == "lock2" && doc["lockId"] == LOCK2_ID)
+  {
+    lock2State = true;
+    digitalWrite(LOCK2_LED_PIN, HIGH);
+    digitalWrite(LOCK2_RELAY_PIN, HIGH);
+    Serial.print("Lock 2 ID: locked ");
+    Serial.println(LOCK2_ID);
+  }
+  else if (eventPayload == "unlock2" && doc["lockId"] == LOCK2_ID)
+  {
+    lock2State = false;
+    digitalWrite(LOCK2_LED_PIN, LOW);
+    digitalWrite(LOCK2_RELAY_PIN, LOW);
+    Serial.print("Lock 2 ID: unlocked");
+    Serial.println(LOCK2_ID);
+    Serial.println("hello");
+  }
+}
